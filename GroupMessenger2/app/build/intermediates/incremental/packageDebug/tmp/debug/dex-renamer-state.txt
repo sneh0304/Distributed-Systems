@@ -1,0 +1,4 @@
+#Fri Mar 06 19:48:59 EST 2020
+base.0=/home/snehashish/AndroidStudioProjects/GroupMessenger2/app/build/intermediates/dex/debug/mergeDexDebug/out
+path.0=classes.dex
+renamed.0=classes.dex

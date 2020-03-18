@@ -14,20 +14,20 @@ import android.view.View;
 import android.widget.EditText;
 import android.widget.TextView;
 
-import java.io.BufferedReader;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
-import java.net.UnknownHostException;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -47,7 +47,7 @@ public class GroupMessengerActivity extends Activity {
     private static final String KEY_FIELD = "key";
     private static final String VALUE_FIELD = "value";
     private String myPort;
-    private String deadNode = " ";
+    private String deadNode = "00000";
     Map<String, String> ports = new HashMap<String, String>() {
         {
             put(REMOTE_PORT0, "0");
@@ -58,6 +58,7 @@ public class GroupMessengerActivity extends Activity {
         }
     };
     private Uri mUri;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -69,7 +70,7 @@ public class GroupMessengerActivity extends Activity {
          */
         final TextView tv = (TextView) findViewById(R.id.textView1);
         tv.setMovementMethod(new ScrollingMovementMethod());
-        
+
         /*
          * Registers OnPTestClickListener for "button1" in the layout, which is the "PTest" button.
          * OnPTestClickListener demonstrates how to access a ContentProvider.
@@ -125,85 +126,97 @@ public class GroupMessengerActivity extends Activity {
         private int seqNumber = 0;
         private int lastAgreedSeqNo = 0;
         private int lastProposedSeqNo = 0;
-        PriorityQueue<String> buffer = new PriorityQueue<String>(15, new bufferComparator());
+        PriorityQueue<String> buffer = new PriorityQueue<String>(25, new bufferComparator());
         ReentrantLock lock = new ReentrantLock();
+
         @Override
         protected Void doInBackground(ServerSocket... sockets) {
             Log.d(TAG, "ServerTask entered");
             ServerSocket serverSocket = sockets[0];
 
-            try {
-                while (true) {
-//                    serverSocket.setSoTimeout(500);
+            while (true) {
+                try {
                     Socket server = serverSocket.accept();
-//                    server.setSoTimeout(500);
+                    server.setSoTimeout(1000);
                     Log.d(TAG, "server connected");
-                    PrintWriter outputStream = new PrintWriter(server.getOutputStream(), true);
-                    BufferedReader inputStream = new BufferedReader(new InputStreamReader(server.getInputStream()));
-                    String msgReceived = inputStream.readLine(); // msg received
-                    if (msgReceived != null) {
-                        Log.d(TAG, "S: message received: " + msgReceived);
-                        String port = msgReceived.split(" ", 2)[0];
-                        msgReceived = msgReceived.split(" ", 2)[1];
-                        addToBuffer(msgReceived);
-                        Log.d(TAG, "S: message added to buffer: " + msgReceived);
-                        Log.d(TAG, "S: Remote port: " + port + " var my port: " + myPort);
-                        //if (Integer.parseInt(port) != Integer.parseInt(myPort)) {
+                    DataInputStream inputStream = new DataInputStream(server.getInputStream());
+                    DataOutputStream outputStream = new DataOutputStream(server.getOutputStream());
+                    String msgType = inputStream.readUTF();
+                    Log.d(TAG, "S: msgType received: " + msgType);
+                    if (msgType.equals("msg")) {
+                        String port = inputStream.readUTF(); // msg received
+                        Log.d(TAG, "S: port received: " + port);
+                        String seq = inputStream.readUTF();
+                        Log.d(TAG, "S: seq received: " + seq);
+                        String msg = inputStream.readUTF();
+                        Log.d(TAG, "S: msg received: " + msg);
+                        String msgReceived = port + " " + seq + " " + msg;
+                        if (msgReceived != null) {
+                            Log.d(TAG, "S: message received: " + msgReceived);
+                            addToBuffer(msgReceived);
+                            Log.d(TAG, "S: message added to buffer: " + msgReceived);
                             String proposedSeq = getProposedSeq();
-                            outputStream.println(proposedSeq); // proposed seq #
+                            outputStream.writeUTF(proposedSeq); // proposed seq #
                             outputStream.flush();
-                        //}
-                        String acceptedSeq;
-                        while (true) {
-                            acceptedSeq = inputStream.readLine(); // final seq # received
-                            if (acceptedSeq.length() > 0)
-                                break;
+                            Log.d(TAG, "S: sent proposed seq #: " + proposedSeq);
+                        } else {
+                            Log.d(TAG, "S: null message received");
                         }
-                        Log.d(TAG, "S: Received final seq #: " + acceptedSeq + " len: " + acceptedSeq.length());
-                        outputStream.println("Received final seq #");
+                    } else if (msgType.equals("ASN")) {
+                        String acceptedSeq = inputStream.readUTF(); // final seq # received
+                        Log.d(TAG, "S: Received final seq #: " + acceptedSeq);
+                        outputStream.writeUTF("Received final seq #");
                         outputStream.flush();
-                        String [] temp = acceptedSeq.split(" ", 3);
-                        String msgToRmv = "0 " + temp[1] + " " + temp[2];
-                        String msgToAdd = "1 " + temp[0] + " " + temp[2];  //-- 1 means msg is now ready to be delivered
-                        Log.d(TAG, "S: removing message to buffer: " + msgToRmv);
-                        removeFromBufferAndUpdateProposedSeq(msgToRmv, Float.parseFloat(temp[0]));
+                        String[] temp = acceptedSeq.split(" ", 4);
+                        String msgToRmv = "0 " + temp[1] + " " + temp[2] + " " + temp[3];
+                        String msgToAdd = "1 " + temp[1] + " " + temp[0] + " " + temp[3];  //-- 1 means msg is now ready to be delivered
+                        Log.d(TAG, "S: removing message from buffer: " + msgToRmv);
+                        removeFromBufferAndUpdateAgreedSeq(msgToRmv, Float.parseFloat(temp[0]));
                         Log.d(TAG, "S: adding message to buffer: " + msgToAdd);
                         addToBuffer(msgToAdd);
-                        while (!buffer.isEmpty()) {
-                            String [] str = buffer.peek().split(" ", 3);
-                            if (Integer.parseInt(str[0]) == 1) {
-                                String msg = buffer.poll().split(" ", 3)[2];
-                                publishProgress(msg);
-                            }
-                            else
-                                break;
-                        }
-//                        Log.d(TAG, "message published: " + msgReceived);
-//                        outputStream.println("message published, go ahead and close the socket");
-//                        Log.d(TAG, "message received acknowledgement sent from server");
-                    } else {
-                        Log.d(TAG, "null message received");
+                        Log.d(TAG, "S: After adding to buffer: " + buffer);
+                        Log.d(TAG, "S: dead node: " + deadNode);
+                        publishMessage();
+                    } else if (msgType.equals("deadNode")) {
+                        deadNode = inputStream.readUTF();
+                        Log.d(TAG, "S: Received dead node #: " + deadNode);
+                        outputStream.writeUTF("Received dead node #");
+                        outputStream.flush();
+                        publishMessage();
                     }
-//                    server.close();
-//                    Log.d(TAG, "server socket closed");
-//                    inputStream.close();
-//                    Log.d(TAG, "server input stream closed");
-//                    outputStream.close();
-//                    Log.d(TAG, "server output stream closed");
+                } catch (Exception e) {
+                    Log.e(TAG, "ServerTask Exception: " + e.toString());
+                    continue;
+                } finally {
+                    if (lock.isLocked())
+                        lock.unlock();
                 }
-            } catch (SocketTimeoutException e) {
-                Log.e(TAG, "ServerTask socket Timed out");
-            } catch (IOException e) {
-                Log.e(TAG, e.getMessage());
-                Log.e(TAG, "ServerTask socket IOException");
+//                return null;
             }
 
-            return null;
         }
 
-        private void removeFromBufferAndUpdateProposedSeq(String msgToRmv, float proposedSeqNo) {
+        private void publishMessage() {
+            while (!buffer.isEmpty()) {
+                String[] str = buffer.peek().split(" ", 4);
+                if (Integer.parseInt(str[0]) == 1) {
+                    String msg1 = buffer.poll().split(" ", 4)[3];
+                    publishProgress(msg1);
+                    Log.d(TAG, "S: message published: " + msg1);
+                } else {
+                    Log.d(TAG, "S: dead node: " + deadNode);
+                    if (str[1].compareTo(deadNode) == 0) {
+                        String s = buffer.poll();
+                        Log.d(TAG, "S: message deleted from dead node's buffer: " + deadNode + " " + s);
+                    } else
+                        break;
+                }
+            }
+        }
+
+        private void removeFromBufferAndUpdateAgreedSeq(String msgToRmv, float agreedSeqNo) {
             lock.lock();
-            lastProposedSeqNo = (int) Math.ceil(proposedSeqNo);
+            lastAgreedSeqNo = (int) Math.ceil(agreedSeqNo);
             buffer.remove(msgToRmv);
             lock.unlock();
         }
@@ -212,7 +225,7 @@ public class GroupMessengerActivity extends Activity {
             lock.lock();
             int lastSeqNo = lastAgreedSeqNo > lastProposedSeqNo ? lastAgreedSeqNo : lastProposedSeqNo;
             String val = ++lastSeqNo + "." + ports.get(myPort);
-            lastAgreedSeqNo = lastSeqNo;
+            lastProposedSeqNo = lastSeqNo;
             lock.unlock();
             return val;
         }
@@ -241,7 +254,6 @@ public class GroupMessengerActivity extends Activity {
                 Log.d(TAG, "insert done for key: " + keyToInsert);
                 seqNumber++;
             } catch (Exception e) {
-                Log.e(TAG, e.getMessage());
                 Log.e(TAG, "insert key-value failed");
             }
             return;
@@ -250,8 +262,8 @@ public class GroupMessengerActivity extends Activity {
 
     class bufferComparator implements Comparator<String> {
         public int compare(String s1, String s2) {
-            float a = Float.parseFloat(s1.split(" ", 0)[1]);
-            float b = Float.parseFloat(s2.split(" ", 0)[1]);
+            float a = Float.parseFloat(s1.split(" ", 4)[2]);
+            float b = Float.parseFloat(s2.split(" ", 4)[2]);
             if (a < b)
                 return -1;
             else if (a > b)
@@ -263,90 +275,105 @@ public class GroupMessengerActivity extends Activity {
     private class ClientTask extends AsyncTask<String, Void, Void> {
         int i = 0;
         int lastSeqNo = 0;
-        float [] proposedSeqList = {0, 0, 0, 0, 0};
-        Socket [] sockets = new Socket[]{new Socket(),new Socket(),new Socket(),new Socket(),new Socket()};
+        float[] proposedSeqList = {0, 0, 0, 0, 0};
+        List<String> sockets = new CopyOnWriteArrayList<String>();
+
         @Override
         protected Void doInBackground(String... msgs) {
             Log.d(TAG, "ClientTask entered");
+            sockets.add(REMOTE_PORT0);
+            sockets.add(REMOTE_PORT1);
+            sockets.add(REMOTE_PORT2);
+            sockets.add(REMOTE_PORT3);
+            sockets.add(REMOTE_PORT4);
             String msg = msgs[0];
             String seq = ++lastSeqNo + "." + ports.get(myPort);
-            String msgToSend = seq + " " + msg;
+            String msgToSend = myPort + " " + seq + " " + msg;
             String remotePort = REMOTE_PORT0;
+
+            for (; i < 5 ; i++) {
                 try {
-                    for (; i < 5; i++) {
-                        switch (i) {
-                            case 0:
-                                remotePort = REMOTE_PORT0;
-                                break;
-                            case 1:
-                                remotePort = REMOTE_PORT1;
-                                break;
-                            case 2:
-                                remotePort = REMOTE_PORT2;
-                                break;
-                            case 3:
-                                remotePort = REMOTE_PORT3;
-                                break;
-                            case 4:
-                                remotePort = REMOTE_PORT4;
-                                break;
-                        }
-                        sockets[i].connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort)));//, 1500);
-                        Log.d(TAG, "C: " + remotePort + " client socket created");
-//                        sockets[i].setSoTimeout(1500);
-                        BufferedReader inputStream = new BufferedReader(new InputStreamReader(sockets[i].getInputStream()));
-                        PrintWriter outputStream = new PrintWriter(sockets[i].getOutputStream(), true);
-                        outputStream.println(myPort + " 0 " + msgToSend);  // msg sent-- 0 means msg is not deliverable
-                        outputStream.flush();
-                        Log.d(TAG, "C: message sent: " + msgToSend);
-                        //inputStream.readLine();
-                        //if (Integer.parseInt(remotePort) != Integer.parseInt(myPort)) {
-                        String proposedSeq = inputStream.readLine();  //received proposal seq #
-                        Log.d(TAG, "C: received proposal seq # from " + remotePort + " :" + proposedSeq);
-                        proposedSeqList[i] = Float.parseFloat(proposedSeq);
-                        //} else {
-                        //    proposedSeqList[i] = Float.parseFloat(seq);
-                        //}
-
-//                    String ack = inputStream.readLine();
-//                    Log.d(TAG, "acknowledgement received from server: " + ack);
-//
-//                    socket.close();
-//                    Log.d(TAG, remotePort + " client socket closed");
-//                    outputStream.close();
-//                    Log.d(TAG, "client output stream closed");
-//                    inputStream.close();
-//                    Log.d(TAG, "client input stream closed");
-                    }
-
-                    float selectedSeq = Float.NEGATIVE_INFINITY;
-                    for (float x : proposedSeqList) {
-                        if (x > selectedSeq)
-                            selectedSeq = x;
-                    }
-
-                    int j = 0;
-                    String acceptedSeq = selectedSeq + " " + msgToSend;
-                    while (j < 5) {
-                        BufferedReader inputStream = new BufferedReader(new InputStreamReader(sockets[j].getInputStream()));
-                        PrintWriter outputStream = new PrintWriter(sockets[j].getOutputStream(), true);
-                        outputStream.println(acceptedSeq);
-                        outputStream.flush();
-                        Log.d(TAG, "C: sent accepted seq # to " + j + " :" + acceptedSeq);
-                        String ack = inputStream.readLine();
-                        Log.d(TAG, "C: acknowledgement received from server: " + ack);
-                        j++;
-                    }
-
-                } catch (UnknownHostException e) {
-                    Log.e(TAG, "ClientTask UnknownHostException");
+                    remotePort = sockets.get(i);
+                    Socket socket = new Socket();
+                    socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort)), 1000);
+                    Log.d(TAG, "C: " + remotePort + " client socket created");
+                    socket.setSoTimeout(2000);
+                    DataInputStream inputStream = new DataInputStream(socket.getInputStream());
+                    DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
+                    outputStream.writeUTF("msg");
+                    outputStream.writeUTF("0 " + myPort);  // msg sent-- 0 means msg is not deliverable
+                    outputStream.writeUTF(seq);
+                    outputStream.writeUTF(msg);
+                    outputStream.flush();
+                    Log.d(TAG, "C: message sent: " + msgToSend);  //msg format: 0/1 port seq# msg
+                    String proposedSeq = inputStream.readUTF();  //received proposal seq #
+                    proposedSeqList[i] = Float.parseFloat(proposedSeq);
+                    Log.d(TAG, "C: received proposal seq # from " + remotePort + " :" + proposedSeq);
                 } catch (SocketTimeoutException e) {
-                    Log.e(TAG, "ClientTask socket Timed out");
-                } catch (IOException e) {
-                    Log.e(TAG, e.getMessage());
-                    Log.e(TAG, "ClientTask socket IOException");
+                    i--;
+                    Log.e(TAG, "ClientTask Timeout Exception: " + e.toString());
+                    continue;
+                }
+                catch (Exception e) {
+                    deadNode = remotePort;
+                    sockets.set(i, null);
+                    Log.e(TAG, "ClientTask Exception: " + deadNode + " x " + e.toString());
+                    continue;
+                }
+            }
+            try {
+                float selectedSeq = Float.NEGATIVE_INFINITY;
+                for (float x : proposedSeqList) {
+                    if (x > selectedSeq)
+                        selectedSeq = x;
                 }
 
+                String acceptedSeq = selectedSeq + " " + msgToSend;
+                for (int j = 0; j < 5; j++) {
+                    String port = sockets.get(j);
+                    try {
+                        if(port != null) {
+                            Socket socket = new Socket();
+                            socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(port)), 1000);
+                            DataInputStream inputStream = new DataInputStream(socket.getInputStream());
+                            DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
+                            outputStream.writeUTF("ASN");
+                            outputStream.writeUTF(acceptedSeq);
+                            outputStream.flush();
+                            Log.d(TAG, "C: sent accepted seq # to " + port + " :" + acceptedSeq);
+                            String ack = inputStream.readUTF();
+                            Log.d(TAG, "C: acknowledgement received from server: " + ack);
+                        }
+                    } catch (IOException e) {
+                        deadNode = port;
+                        Log.e(TAG, "ClientTask socket IOException " + e.toString());
+                    }
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "ClientTask socket IOException" + e.toString());
+            }
+
+            if (!deadNode.equals("00000")) {
+                for (int j = 0; j < 5; j++) {
+                    String port = sockets.get(j);
+                    try {
+                        if(port != null) {
+                            Socket socket = new Socket();
+                            socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(port)), 1000);
+                            DataInputStream inputStream = new DataInputStream(socket.getInputStream());
+                            DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
+                            outputStream.writeUTF("deadNode");
+                            outputStream.writeUTF(deadNode);
+                            outputStream.flush();
+                            Log.d(TAG, "C: sent dead node # to " + port + " :" + deadNode);
+                            String ack = inputStream.readUTF();
+                            Log.d(TAG, "C: acknowledgement received from server: " + ack);
+                        }
+                    } catch (IOException e) {
+                        Log.e(TAG, "ClientTask socket IOException " + e.toString());
+                    }
+                }
+            }
             return null;
         }
     }

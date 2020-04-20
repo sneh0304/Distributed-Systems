@@ -13,6 +13,7 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Formatter;
 import java.util.List;
 import java.util.PriorityQueue;
@@ -27,6 +28,7 @@ import android.database.MatrixCursor;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.telephony.TelephonyManager;
+import android.text.TextUtils;
 import android.util.Log;
 import android.widget.TextView;
 
@@ -192,12 +194,13 @@ public class SimpleDhtProvider extends ContentProvider {
                 String msg = "query_all";
                 String queryRes = new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg).get();
                 System.out.println("query all res at query: " + queryRes);
-                for (String keyValuePair : queryRes.split("\t")) {
-                    String key = keyValuePair.split(" ")[0];
-                    value = keyValuePair.split(" ")[1];
+                for (String keyValuePair : queryRes.split("-->")) {
+                    String[] temp = keyValuePair.split(" ");
+                    String key = temp[0];
+                    value = temp[1];
                     String[] res = {key, value};
                     cursor.addRow(res);
-                    System.out.println(cursor);
+                    System.out.println(res[0] + " " + res[1]);
                 }
             } else {
                 String hKey = "";
@@ -235,6 +238,7 @@ public class SimpleDhtProvider extends ContentProvider {
         } catch (Exception e) {
 //            Log.e(TAG, e.getMessage());
             Log.e(TAG, "Content value read failed " + e.toString());
+            e.printStackTrace();
             return null;
         }
         return cursor;
@@ -357,19 +361,18 @@ public class SimpleDhtProvider extends ContentProvider {
                         outputStream.writeUTF("Done");
                         Log.d(TAG, "s: " + "ack sent for query");
                     } else if (msgType.equals("query_all")) {
-                        String selection = inputStream.readUTF();
-                        Cursor resultCursor = query(mUri, null, selection, null, null);
+                        Cursor resultCursor = query(mUri, null, "@", null, null);
                         int keyIndex = resultCursor.getColumnIndex(KEY_FIELD);
                         int valueIndex = resultCursor.getColumnIndex(VALUE_FIELD);
-                        String res = "";
+                        List<String> res = new ArrayList<String>();
                         while (resultCursor.moveToNext()) {
-                            String returnKey = resultCursor.getString(keyIndex);
-                            String returnValue = resultCursor.getString(valueIndex);
-                            res += returnKey + " " + returnValue + "\t";
+                            String returnKey = resultCursor.getString(keyIndex).trim();
+                            String returnValue = resultCursor.getString(valueIndex).trim();
+                            System.out.println("S: check: " + returnKey + " " + returnValue);
+                            res.add(returnKey + " " + returnValue);
                         }
                         resultCursor.close();
-                        res = res.trim();
-                        outputStream.writeUTF(res);
+                        outputStream.writeUTF(TextUtils.join("-->", res));
                         outputStream.flush();
                         outputStream.writeUTF("Done");
                         Log.d(TAG, "s: " + "ack sent for query_all");
@@ -453,6 +456,7 @@ public class SimpleDhtProvider extends ContentProvider {
                     Log.d(TAG, "C: " + "ack received for query/delete " + ack);
                 } else if (msgType.equals("query_all") || msgType.equals("delete_all")) {
                     String remotePort = REMOTE_PORT0;
+                    List<String> queryResList = new ArrayList<String>();
                     for (int i = 0; i < 5; i++) {
                         try {
                             switch (i) {
@@ -478,11 +482,11 @@ public class SimpleDhtProvider extends ContentProvider {
                             DataInputStream inputStream = new DataInputStream(socket.getInputStream());
                             DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
                             outputStream.writeUTF(msgType);
-                            outputStream.writeUTF("@");
                             outputStream.flush();
                             if (msgType.equals("query_all")) {
                                 String intermediateRes = inputStream.readUTF();
-                                queryRes += intermediateRes + "\t";
+                                if (!intermediateRes.equals(""))
+                                    queryResList.add(intermediateRes);
                             }
                             String ack = inputStream.readUTF();
                             Log.d(TAG, "C: " + "ack received for query all/delete all " + ack);
@@ -491,6 +495,8 @@ public class SimpleDhtProvider extends ContentProvider {
                         }
 
                     }
+                    if (msgType.equals("query_all"))
+                        queryRes = TextUtils.join("-->", queryResList);
                     System.out.println("query all res: " + queryRes);
                 }
             } catch (Exception e) {

@@ -152,7 +152,7 @@ public class SimpleDhtProvider extends ContentProvider {
 
         Uri.Builder uriBuilder = new Uri.Builder();
         uriBuilder.scheme("content");
-        uriBuilder.authority("edu.buffalo.cse.cse486586.groupmessenger2.provider");
+        uriBuilder.authority("edu.buffalo.cse.cse486586.simpledht.provider");
         mUri = uriBuilder.build();
 
         try {

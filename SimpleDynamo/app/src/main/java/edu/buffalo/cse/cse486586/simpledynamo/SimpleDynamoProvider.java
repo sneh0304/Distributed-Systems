@@ -13,6 +13,7 @@ import java.net.Socket;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Formatter;
@@ -40,14 +41,11 @@ public class SimpleDynamoProvider extends ContentProvider {
 	static final String REMOTE_PORT2 = "11116";
 	static final String REMOTE_PORT3 = "11120";
 	static final String REMOTE_PORT4 = "11124";
-	static final String FIRST_JOINEE = REMOTE_PORT0;
 	static final int SERVER_PORT = 10000;
 
 	private String myPort;
-	private String successor, predecessor = null;
 	private Uri mUri;
 	private LinkedList<String> memberList = new LinkedList<String>();
-
 	ReentrantLock rLock = new ReentrantLock();
 	ReentrantLock wLock = new ReentrantLock();
 
@@ -93,7 +91,6 @@ public class SimpleDynamoProvider extends ContentProvider {
 				}
 			}
 		} catch (Exception e) {
-//            Log.e(TAG, e.getMessage());
 			Log.e(TAG, "Content value delete failed " + e.toString());
 			return 0;
 		}
@@ -194,10 +191,11 @@ public class SimpleDynamoProvider extends ContentProvider {
 			Log.e(TAG, "Can't create a ServerSocket");
 			return false;
 		}
-//		if (!myPort.equals(FIRST_JOINEE)) {
-//			String msg = "node_join";
-//			new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg, "start", myPort);
-//		}
+
+		delete(mUri, "@", null);
+		String msg = "recover";
+		new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg, myPort);
+
 		return true;
 	}
 
@@ -210,15 +208,17 @@ public class SimpleDynamoProvider extends ContentProvider {
 		MatrixCursor cursor = new MatrixCursor(columnNames);
 
 		BufferedReader inputStream;
-		String value;
+		String key, value;
 		try {
 			if (selection.equals("@")) {
 				for (String fileName : getContext().fileList()) {
 					inputStream = new BufferedReader(new InputStreamReader(getContext().openFileInput(fileName)));
 					Log.v(TAG, "Reading content values: " + fileName);
 					value = inputStream.readLine();
+					key = fileName;
+					System.out.println("filename after removing time: " + key);
 					inputStream.close();
-					String[] res = {fileName, value};
+					String[] res = {key, value};
 					cursor.addRow(res);
 				}
 			} else if (selection.equals("*")) {
@@ -227,7 +227,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 				System.out.println("query all res at query: " + queryRes);
 				for (String keyValuePair : queryRes.split("-->")) {
 					String[] temp = keyValuePair.split(" ");
-					String key = temp[0];
+					key = temp[0];
 					value = temp[1];
 					String[] res = {key, value};
 					cursor.addRow(res);
@@ -265,7 +265,6 @@ public class SimpleDynamoProvider extends ContentProvider {
 				}
 			}
 		} catch (Exception e) {
-//            Log.e(TAG, e.getMessage());
 			Log.e(TAG, "Content value read failed " + e.toString());
 			e.printStackTrace();
 			return null;
@@ -273,20 +272,23 @@ public class SimpleDynamoProvider extends ContentProvider {
 		return cursor;
 	}
 
-	private String read(String selection) {
+	private String[] read(String selection) {
 		BufferedReader inputStream;
 		String value;
+		String[] res = new String[2];
 		try {
 			inputStream = new BufferedReader(new InputStreamReader(getContext().openFileInput(selection)));
 			Log.v(TAG, "Reading content values: " + selection);
 			value = inputStream.readLine();
 			inputStream.close();
+			res[0] = selection;
+			res[1] = value;
 		} catch (Exception e) {
 			Log.e(TAG, "Content value read failed " + e.toString());
 			e.printStackTrace();
 			return null;
 		}
-		return value;
+		return res;
 	}
 
 	@Override
@@ -315,40 +317,6 @@ public class SimpleDynamoProvider extends ContentProvider {
 		return false;
 	}
 
-	private void nodeJoin(String port) {
-		if (predecessor == null) {
-			successor = predecessor = port;
-			String msg = "set_succ_pred";
-			new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg, port, myPort);
-		} else {
-			String hPort = port;
-			String hMyPort = myPort;
-			String hPredecessor = predecessor;
-			try {
-				int port1 = Integer.parseInt(port) / 2;
-				hPort = genHash(String.valueOf(port1));
-				int port2 = Integer.parseInt(myPort) / 2;
-				hMyPort = genHash(String.valueOf(port2));
-				int pred = Integer.parseInt(predecessor) / 2;
-				hPredecessor = genHash(String.valueOf(pred));
-			} catch (NoSuchAlgorithmException e) {
-				Log.e(TAG, e.getMessage());
-				Log.e(TAG, "Hashing failed");
-			}
-			if (isTargetNode(hPort, hMyPort, hPredecessor)) {
-				new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, "set_succ", port, myPort);
-				new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, "set_pred", port, predecessor);
-				new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, "set_succ", predecessor, port);
-				predecessor = port;
-
-			} else {
-				String msg = "node_join";
-				new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg, "forward", port);
-			}
-		}
-
-	}
-
 	private class ServerTask extends AsyncTask<ServerSocket, Void, Void> {
 		@Override
 		protected Void doInBackground(ServerSocket... sockets) {
@@ -363,26 +331,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 					DataOutputStream outputStream = new DataOutputStream(server.getOutputStream());
 					String msgType = inputStream.readUTF();
 					Log.d(TAG, "S: msgType received: " + msgType);
-					if (msgType.equals("node_join")) {
-						String port = inputStream.readUTF();
-						Log.d(TAG, "S: port received to find successor and predecessor: " + port);
-						nodeJoin(port);
-					} else if (msgType.equals("set_succ_pred")) {
-						String port = inputStream.readUTF();
-						successor = predecessor = port;
-						outputStream.writeUTF("Done");
-						Log.d(TAG, "s: " + "ack sent for set_succ_pred");
-					} else if (msgType.equals("set_succ")) {
-						String port = inputStream.readUTF();
-						successor = port;
-						outputStream.writeUTF("Done");
-						Log.d(TAG, "s: " + "ack sent for set_succ");
-					} else if (msgType.equals("set_pred")) {
-						String port = inputStream.readUTF();
-						predecessor = port;
-						outputStream.writeUTF("Done");
-						Log.d(TAG, "s: " + "ack sent for set_pred");
-					} else if (msgType.equals("insert")) {
+					if (msgType.equals("insert")) {
 						String key = inputStream.readUTF();
 						String val = inputStream.readUTF();
 						wLock.lock();
@@ -393,10 +342,10 @@ public class SimpleDynamoProvider extends ContentProvider {
 					} else if (msgType.equals("query")) {
 						String selection = inputStream.readUTF();
 						rLock.lock();
-						String res = read(selection);
+						String[] res = read(selection);
 						rLock.unlock();
-						outputStream.writeUTF(selection);
-						outputStream.writeUTF(res);
+						outputStream.writeUTF(res[0]);
+						outputStream.writeUTF(res[1]);
 						outputStream.flush();
 						outputStream.writeUTF("Done");
 						Log.d(TAG, "s: " + "ack sent for query");
@@ -408,7 +357,6 @@ public class SimpleDynamoProvider extends ContentProvider {
 						while (resultCursor.moveToNext()) {
 							String returnKey = resultCursor.getString(keyIndex).trim();
 							String returnValue = resultCursor.getString(valueIndex).trim();
-							System.out.println("S: check: " + returnKey + " " + returnValue);
 							res.add(returnKey + " " + returnValue);
 						}
 						resultCursor.close();
@@ -418,7 +366,9 @@ public class SimpleDynamoProvider extends ContentProvider {
 						Log.d(TAG, "s: " + "ack sent for query_all");
 					} else if (msgType.equals("delete")) {
 						String selection = inputStream.readUTF();
+						wLock.lock();
 						getContext().deleteFile(selection);
+						wLock.unlock();
 						outputStream.writeUTF("Done");
 						Log.d(TAG, "s: " + "ack sent for delete");
 					} else if (msgType.equals("delete_all")) {
@@ -426,7 +376,6 @@ public class SimpleDynamoProvider extends ContentProvider {
 						outputStream.writeUTF("Done");
 						Log.d(TAG, "s: " + "ack sent for delete_all");
 					}
-
 				} catch (Exception e) {
 					Log.e(TAG, "ServerTask Exception: " + e.toString());
 					continue;
@@ -443,74 +392,82 @@ public class SimpleDynamoProvider extends ContentProvider {
 			String msgType = msgs[0];
 
 			try {
-				if (msgType.equals("node_join")) {
-					String remotePort = REMOTE_PORT0;
-					if (msgs[1].equals("forward"))
-						remotePort = successor;
-					Socket socket = new Socket();
-					socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort)), 1000);
-					Log.d(TAG, "C: " + remotePort + " client socket created for node join");
-					DataInputStream inputStream = new DataInputStream(socket.getInputStream());
-					DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
-					outputStream.writeUTF(msgType);
-					outputStream.writeUTF(msgs[2]);
-					outputStream.flush();
-				} else if (msgType.equals("set_succ_pred") || msgType.equals("set_succ") || msgType.equals("set_pred")) {
-					String remotePort = msgs[1];
-					Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort));
-					Log.d(TAG, "C: " + remotePort + " client socket created for updating successor/predecessor");
-					DataInputStream inputStream = new DataInputStream(socket.getInputStream());
-					DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
-					outputStream.writeUTF(msgType);
-					outputStream.writeUTF(msgs[2]);
-					outputStream.flush();
-					String ack = inputStream.readUTF();
-					Log.d(TAG, "C: " + "ack received for setting successor/predecessor " + ack);
-				} else if (msgType.equals("insert")) {
+				if (msgType.equals("insert")) {
 					int targetIdx = Integer.parseInt(msgs[1]);
 					String remotePort;
 					for (int i = 0; i < 3; i++) {
-						remotePort = memberList.get((targetIdx + i) % 5);
-						Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort));
-						Log.d(TAG, "C: " + remotePort + " client socket created to insert values");
+						try {
+							remotePort = memberList.get((targetIdx + i) % 5);
+							Socket socket = new Socket();
+							socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort)), 1000);
+							Log.d(TAG, "C: " + remotePort + " client socket created to insert values");
+							DataInputStream inputStream = new DataInputStream(socket.getInputStream());
+							DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
+							outputStream.writeUTF(msgType);
+							outputStream.writeUTF(msgs[2]);
+							outputStream.writeUTF(msgs[3]);
+							outputStream.flush();
+							String ack = inputStream.readUTF();
+							Log.d(TAG, "C: " + "ack received for insert " + ack);
+						} catch (Exception e) {
+							Log.e(TAG, "ClientTask Exception during insert: " + e.toString());
+						}
+					}
+				} else if (msgType.equals("query")) {
+					int targetIdx = Integer.parseInt(msgs[1]);
+					String remotePort;
+					try {
+						remotePort = memberList.get((targetIdx + 2) % 5);
+						Socket socket = new Socket();
+						socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort)), 1000);
+						Log.d(TAG, "C: " + remotePort + " client socket created to query a value");
 						DataInputStream inputStream = new DataInputStream(socket.getInputStream());
 						DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
 						outputStream.writeUTF(msgType);
 						outputStream.writeUTF(msgs[2]);
-						outputStream.writeUTF(msgs[3]);
 						outputStream.flush();
+						String key = inputStream.readUTF();
+						String val = inputStream.readUTF();
+						queryRes = key + " " + val;
 						String ack = inputStream.readUTF();
-						Log.d(TAG, "C: " + "ack received for insert " + ack);
+						Log.d(TAG, "C: " + "ack received for query " + ack);
+					} catch (Exception e) {
+						Log.e(TAG, "ClientTask Exception during query: " + e.toString());
+						remotePort = memberList.get((targetIdx + 1) % 5);
+						Socket socket = new Socket();
+						socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort)), 1000);
+						Log.d(TAG, "C: " + remotePort + " client socket created to query a value");
+						DataInputStream inputStream = new DataInputStream(socket.getInputStream());
+						DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
+						outputStream.writeUTF(msgType);
+						outputStream.writeUTF(msgs[2]);
+						outputStream.flush();
+						String key = inputStream.readUTF();
+						String val = inputStream.readUTF();
+						queryRes = key + " " + val;
+						String ack = inputStream.readUTF();
+						Log.d(TAG, "C: " + "ack received for query " + ack);
 					}
-				} else if (msgType.equals("query")) {
-					int targetIdx = Integer.parseInt(msgs[1]);
-					String remotePort = memberList.get((targetIdx + 2) % 5);
-					Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort));
-					Log.d(TAG, "C: " + remotePort + " client socket created to query a value");
-					DataInputStream inputStream = new DataInputStream(socket.getInputStream());
-					DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
-					outputStream.writeUTF(msgType);
-					outputStream.writeUTF(msgs[2]);
-					outputStream.flush();
-					String key = inputStream.readUTF();
-					String val = inputStream.readUTF();
-					queryRes = key + " " + val;
-					String ack = inputStream.readUTF();
-					Log.d(TAG, "C: " + "ack received for query/delete " + ack);
+
 				} else if (msgType.equals("delete")) {
 					int targetIdx = Integer.parseInt(msgs[1]);
 					String remotePort;
 					for (int i = 0; i < 3; i++) {
-						remotePort = memberList.get((targetIdx + i) % 5);
-						Socket socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort));
-						Log.d(TAG, "C: " + remotePort + " client socket created to delete values");
-						DataInputStream inputStream = new DataInputStream(socket.getInputStream());
-						DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
-						outputStream.writeUTF(msgType);
-						outputStream.writeUTF(msgs[2]);
-						outputStream.flush();
-						String ack = inputStream.readUTF();
-						Log.d(TAG, "C: " + "ack received for insert " + ack);
+						try {
+							remotePort = memberList.get((targetIdx + i) % 5);
+							Socket socket = new Socket();
+							socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(remotePort)), 1000);
+							Log.d(TAG, "C: " + remotePort + " client socket created to delete values");
+							DataInputStream inputStream = new DataInputStream(socket.getInputStream());
+							DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
+							outputStream.writeUTF(msgType);
+							outputStream.writeUTF(msgs[2]);
+							outputStream.flush();
+							String ack = inputStream.readUTF();
+							Log.d(TAG, "C: " + "ack received for delete " + ack);
+						} catch (Exception e) {
+							Log.e(TAG, "ClientTask Exception during delete: " + e.toString());
+						}
 					}
 				} else if (msgType.equals("query_all") || msgType.equals("delete_all")) {
 					String remotePort = REMOTE_PORT0;
@@ -556,11 +513,98 @@ public class SimpleDynamoProvider extends ContentProvider {
 					if (msgType.equals("query_all"))
 						queryRes = TextUtils.join("-->", queryResList);
 					System.out.println("query all res: " + queryRes);
+				} else if (msgType.equals("recover")) {
+					List<String> recoveryDataList = new ArrayList<String>();
+					String succ, succ1, pred;
+					int idx = memberList.indexOf(myPort);
+					succ = memberList.get((idx + 1) % 5);
+					succ1 = memberList.get((idx + 2) % 5);
+					pred = idx - 1 < 0 ? memberList.getLast() : memberList.get(idx - 1);
+					try {
+						Socket socket = new Socket();
+						socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(succ)), 1000);
+						Log.d(TAG, "C: " + succ + " client socket created to recover data");
+						DataInputStream inputStream = new DataInputStream(socket.getInputStream());
+						DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
+						outputStream.writeUTF("query_all");
+						outputStream.flush();
+						String intermediateRes = inputStream.readUTF();
+						if (!intermediateRes.equals("")) {
+							recoveryDataList.addAll(Arrays.asList(intermediateRes.split("-->")));
+						}
+						String ack = inputStream.readUTF();
+						Log.d(TAG, "C: " + "ack received for recovery " + ack);
+					} catch (Exception e) {
+						Log.e(TAG, "ClientTask Exception during recovering data: " + e.toString());
+					}
+
+					try {
+						Socket socket = new Socket();
+						socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(succ1)), 1000);
+						Log.d(TAG, "C: " + succ1 + " client socket created to recover data");
+						DataInputStream inputStream = new DataInputStream(socket.getInputStream());
+						DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
+						outputStream.writeUTF("query_all");
+						outputStream.flush();
+						String intermediateRes = inputStream.readUTF();
+						if (!intermediateRes.equals("")) {
+							recoveryDataList.addAll(Arrays.asList(intermediateRes.split("-->")));
+						}
+						String ack = inputStream.readUTF();
+						Log.d(TAG, "C: " + "ack received for recovery " + ack);
+					} catch (Exception e) {
+						Log.e(TAG, "ClientTask Exception during recovering data: " + e.toString());
+					}
+
+					try {
+						Socket socket = new Socket();
+						socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(pred)), 1000);
+						Log.d(TAG, "C: " + pred + " client socket created to recover data");
+						DataInputStream inputStream = new DataInputStream(socket.getInputStream());
+						DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream());
+						outputStream.writeUTF("query_all");
+						outputStream.flush();
+						String intermediateRes = inputStream.readUTF();
+						if (!intermediateRes.equals(""))
+							recoveryDataList.addAll(Arrays.asList(intermediateRes.split("-->")));
+						String ack = inputStream.readUTF();
+						Log.d(TAG, "C: " + "ack received for recovery " + ack);
+					} catch (Exception e) {
+						Log.e(TAG, "ClientTask Exception during recovering data: " + e.toString());
+					}
+
+					if (!recoveryDataList.isEmpty())
+						updateOnRecovery(recoveryDataList, pred);
+
 				}
+
 			} catch (Exception e) {
 				Log.e(TAG, "ClientTask Exception: " + e.toString());
 			}
 			return queryRes.trim();
+		}
+	}
+
+	private void updateOnRecovery(List<String> recoveryDataList, String pred) {
+		System.out.println(recoveryDataList);
+		try {
+			int idx = memberList.indexOf(pred);
+			String pred1 = idx - 1 < 0 ? memberList.getLast() : memberList.get(idx - 1);
+			idx = memberList.indexOf(pred1);
+			String pred2 = idx - 1 < 0 ? memberList.getLast() : memberList.get(idx - 1);
+			String hPort = genHash(String.valueOf(Integer.parseInt(myPort) / 2));
+			String hPred = genHash(String.valueOf(Integer.parseInt(pred) / 2));
+			String hPred1 = genHash(String.valueOf(Integer.parseInt(pred1) / 2));
+			String hPred2 = genHash(String.valueOf(Integer.parseInt(pred2) / 2));
+
+			for (String s : recoveryDataList) {
+				String[] temp = s.split(" ");
+				String hkey = genHash(temp[0]);
+				if (isTargetNode(hkey, hPort, hPred) || isTargetNode(hkey, hPred, hPred1) || isTargetNode(hkey, hPred1, hPred2))
+					write(temp[0], temp[1]);
+			}
+		} catch (NoSuchAlgorithmException e) {
+			Log.e(TAG, "Hashing failed");
 		}
 	}
 }

@@ -520,6 +520,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 					succ = memberList.get((idx + 1) % 5);
 					succ1 = memberList.get((idx + 2) % 5);
 					pred = idx - 1 < 0 ? memberList.getLast() : memberList.get(idx - 1);
+					wLock.lock();
 					try {
 						Socket socket = new Socket();
 						socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(succ)), 1000);
@@ -575,7 +576,7 @@ public class SimpleDynamoProvider extends ContentProvider {
 
 					if (!recoveryDataList.isEmpty())
 						updateOnRecovery(recoveryDataList, pred);
-
+					wLock.unlock();
 				}
 
 			} catch (Exception e) {
